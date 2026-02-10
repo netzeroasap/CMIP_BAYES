@@ -4,6 +4,7 @@ import xarray as xr
 import pandas as pd
 import json
 import os,glob
+import scipy.stats as stats
 
 
 #Make sure it can see the system path
@@ -95,3 +96,70 @@ def load_temperature(year):
                 modelcoords+=[model]
 
     return xr.DataArray(data=data,coords={"model":modelcoords})
+
+
+def emergent_constraints(generation):
+    if generation == "CMIP6":
+        df=pd.read_excel("data/emergent_constraints/Schlund_esd-11-1233-2020-t06_CMIP6.xlsx")
+        # replace Unicode minus with ASCII minus
+        df = df.replace("−", "-", regex=True)
+
+        # convert all non-Model columns to numeric
+        for col in df.columns:
+            if col != "Model":
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.drop(columns=["Unnamed: 0"], errors="ignore")
+        df = df.set_index("Model")
+        CMIP6 = xr.Dataset(df)
+        return CMIP6.rename({"Model":"model"})
+    
+    elif generation == "CMIP5":
+        df=pd.read_excel("data/emergent_constraints/Schlund_esd-11-1233-2020-t05_CMIP5.xlsx")
+        # replace Unicode minus with ASCII minus
+        df = df.replace("−", "-", regex=True)
+
+        # convert all non-Model columns to numeric
+        for col in df.columns:
+            if col != "Model":
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.drop(columns=["Unnamed: 0"], errors="ignore")
+        df = df.set_index("Model")
+        CMIP5 = xr.Dataset(df)
+        return CMIP5.rename({"Model":"model"})
+    else:
+        raise TypeError("generation must be one of [\"CMIP5\",\"CMIP6\"]")
+
+
+
+def observations_for_ECs():
+    
+    ec_obs={}
+    
+    #From Zhai:  ±3σ (standard error) (0.56%/K) around the observed αseason of -1.28 K.
+    # https://agupubs.onlinelibrary.wiley.com/doi/epdf/10.1002/2015GL065911
+
+    ec_obs["ZHA"]= (-1.28,0.56/3.) # 3 sigma
+    #ec_obs_unc["ZHA"] =0.56/3. # 3 sigma
+    
+
+    #From Brient and Schneider: Response of SW cloud reflectivity to SST changes is (-0.96+=0.22) (90%CL)
+    #https://journals.ametsoc.org/view/journals/clim/29/16/jcli-d-15-0897.1.xml
+
+    ec_obs["BRI"] = (-0.96,0.22/stats.norm.interval(.9)[1] )#5-95 interval
+    #ec_obs_unc["BRI"] = 0.22/stats.norm.interval(.9)[1] #5-95 interval
+
+    return ec_obs
+
+def prep_EC_data(constraint,generation="CMIP6"):
+    CMIP=emergent_constraints(generation)
+    obsmu,obssigma=observations_for_ECs()[constraint]
+    data={}
+    
+    observable = getattr(CMIP,constraint)
+    mask = ~np.isnan(observable)
+    data["X"] = CMIP.ECS[mask]
+    data["Y"]= observable[mask]
+
+    data["Y_obs"] = obsmu
+    data["sigma_Y"] = obssigma
+    return data
