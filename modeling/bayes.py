@@ -537,7 +537,7 @@ def build_correlated_bias_model_with_processes(
             delta_global = 0.0
 
         X_true = pm.Deterministic(
-            f"{var_name}_true",
+            f"{var_name}",
             eta_global * X_true_unscaled + delta_global,
         )
 
@@ -570,6 +570,9 @@ def simple_ec_model(constraint,priors={},var_name="ECS",observable_name="Y"):
         mu_obs = m*X_true + b
         pm.Normal(f"{observable_name}_obs",mu_obs,data["sigma_Y"],observed=[data["Y_obs"]])
     return model
+
+
+
 def add_emergent_constraint(
     model,
     latent_var_name,
