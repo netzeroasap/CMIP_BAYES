@@ -39,14 +39,6 @@ FIGS/
 *.out
 *.tmp
 
-# -----------------------------
-# Conda / Environment
-# -----------------------------
-env/
-venv/
-*.env
-*.yaml
-*.yml
 
 # -----------------------------
 # Backup or miscellaneous
