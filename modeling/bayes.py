@@ -291,46 +291,85 @@ def build_correlated_random_effects_model(data: xr.DataArray,
     return vecmodel
     
 
-
-
 def build_multiplicative_process(
     lookup_table,
     priors={},
     name="eta",
 ):
-    """
-    Build multiplicative process scaling for model i
-
-    eta_eff_i = Prod_j eta_j ** L_{ji}
-
-    Parameters
-    ----------
-    lookup_table : xr.DataArray, shape (n_process, n_model)
-        Binary indicator of process presence.
-    priors : dict
-        Optional prior for `eta`.
-    name : str
-        Base name for multiplicative process parameters.
-
-    Returns
-    -------
-    eta : TensorVariable, shape (n_process,)
-        Process scaling parameters.
-    eta_eff : TensorVariable, shape (n_model,)
-        Effective scaling per model.
-    """
 
     L = pt.as_tensor_variable(np.asarray(lookup_table).astype(float))
-    nproc = L.shape[0]
 
-    # ----- Per-process scaling -----
-    if name in priors:
-        eta = priors[name](name, dims="multiplicative_process")
+    model = pm.modelcontext(None)
+    proc_labels = model.coords["multiplicative_process"]
+
+    # -------------------------------------------------
+    # GLOBAL SCALE (if not user-specified)
+    # -------------------------------------------------
+
+    if "sigma_eta" in priors:
+        sigma_eta = priors["sigma_eta"]("sigma_eta")
     else:
-        eta = pm.LogNormal(name, 0.0, 0.5, dims="multiplicative_process")
+        sigma_eta = pm.HalfNormal("sigma_eta", 0.3)
 
-    # ----- Effective scaling (log-space) -----
-    log_eta_eff = pt.dot(pt.log(eta), L)
+    # -------------------------------------------------
+    # PRIOR HANDLING
+    # -------------------------------------------------
+
+    if name in priors:
+
+        prior_spec = priors[name]
+
+        # Case 1: Label-specific dict
+        if isinstance(prior_spec, dict):
+
+            eps_components = []
+
+            for label in proc_labels:
+
+                if label in prior_spec:
+                    rv = prior_spec[label](f"{name}_log_{label}")
+                else:
+                    rv = pm.Normal(
+                        f"{name}_log_{label}",
+                        mu=0.0,
+                        sigma=sigma_eta,
+                    )
+
+                eps_components.append(rv)
+
+            eps = pm.Deterministic(
+                f"{name}_log",
+                pt.stack(eps_components),
+                dims="multiplicative_process",
+            )
+
+        # Case 2: Shared callable prior
+        else:
+            eps = prior_spec(
+                f"{name}_log",
+                dims="multiplicative_process",
+            )
+
+    # Case 3: No prior specified
+    else:
+        eps = pm.Normal(
+            f"{name}_log",
+            mu=0.0,
+            sigma=sigma_eta,
+            dims="multiplicative_process",
+        )
+
+    # -------------------------------------------------
+    # Multiplicative structure
+    # -------------------------------------------------
+
+    eta = pm.Deterministic(
+        name,
+        pt.exp(eps),
+        dims="multiplicative_process",
+    )
+
+    log_eta_eff = pt.dot(eps, L)
     eta_eff = pm.Deterministic(
         f"{name}_eff",
         pt.exp(log_eta_eff),
@@ -339,7 +378,129 @@ def build_multiplicative_process(
 
     return eta, eta_eff
 
+## OLD- STILL WORKS, SINGLE PRIOR FOR ALL ##
+# def build_multiplicative_process(
+#     lookup_table,
+#     priors={},
+#     name="eta",
+# ):
+#     """
+#     Build multiplicative process scaling for model i
 
+#     eta_eff_i = Prod_j eta_j ** L_{ji}
+
+#     Parameters
+#     ----------
+#     lookup_table : xr.DataArray, shape (n_process, n_model)
+#         Binary indicator of process presence.
+#     priors : dict
+#         Optional prior for `eta`.
+#     name : str
+#         Base name for multiplicative process parameters.
+
+#     Returns
+#     -------
+#     eta : TensorVariable, shape (n_process,)
+#         Process scaling parameters.
+#     eta_eff : TensorVariable, shape (n_model,)
+#         Effective scaling per model.
+#     """
+
+#     L = pt.as_tensor_variable(np.asarray(lookup_table).astype(float))
+#     nproc = L.shape[0]
+
+#     # ----- Per-process scaling -----
+#     if name in priors:
+#         eta = priors[name](name, dims="multiplicative_process")
+#     else:
+#         eta = pm.LogNormal(name, 0.0, 0.5, dims="multiplicative_process")
+
+#     # ----- Effective scaling (log-space) -----
+#     log_eta_eff = pt.dot(pt.log(eta), L)
+#     eta_eff = pm.Deterministic(
+#         f"{name}_eff",
+#         pt.exp(log_eta_eff),
+#         dims="model",
+#     )
+
+#     return eta, eta_eff
+
+## CENTER AROUND 1###
+# def build_multiplicative_process(
+#     lookup_table,
+#     priors={},
+#     name="eta",
+# ):
+#     """
+#     Build multiplicative process scaling for model i
+
+#     eta_eff_i = Prod_j eta_j ** L_{ji}
+
+#     Multiplicative effects are anchored around 1 via:
+#         eta_j = exp(epsilon_j),  epsilon_j ~ Normal(0, sigma_eta)
+#     """
+
+#     L = pt.as_tensor_variable(np.asarray(lookup_table).astype(float))
+#     nproc = L.shape[0]
+
+#     # ----- Log-scale deviations (anchored at 0) -----
+#     if name in priors:
+#         eps = priors[name](f"{name}_log", dims="multiplicative_process")
+#     else:
+#         eps = pm.Normal(
+#             f"{name}_log",
+#             mu=0.0,
+#             sigma=0.3,   # <-- user-friendly default
+#             dims="multiplicative_process",
+#         )
+
+#     # Positive multiplicative effects
+#     eta = pm.Deterministic(
+#         name,
+#         pt.exp(eps),
+#         dims="multiplicative_process",
+#     )
+
+#     # ----- Effective scaling (still log-additive) -----
+#     log_eta_eff = pt.dot(eps, L)
+#     eta_eff = pm.Deterministic(
+#         f"{name}_eff",
+#         pt.exp(log_eta_eff),
+#         dims="model",
+#     )
+
+#     return eta, eta_eff
+
+
+
+# def build_additive_process(
+#     lookup_table,
+#     priors={},
+#     name="delta",
+# ):
+#     """
+#     Build additive process contribution for model i
+
+#     delta_eff_i = Sum_j delta_j * L_{ji}
+#     """
+
+#     L = pt.as_tensor_variable(np.asarray(lookup_table).astype(float))
+#     nproc = L.shape[0]
+
+#     if name in priors:
+#         delta = priors[name](name, dims="additive_process")
+#     else:
+#         delta = pm.Normal(name, 0.0, 10.0, dims="additive_process")
+        
+#     # delta_eff has dims "model"
+
+#     delta_eff = pm.Deterministic(
+#         f"{name}_eff",
+#         pt.dot(delta, L),
+#         dims="model",
+#     )
+
+#     return delta, delta_eff
 def build_additive_process(
     lookup_table,
     priors={},
@@ -352,14 +513,70 @@ def build_additive_process(
     """
 
     L = pt.as_tensor_variable(np.asarray(lookup_table).astype(float))
-    nproc = L.shape[0]
+
+    model = pm.modelcontext(None)
+    proc_labels = model.coords["additive_process"]
+
+    # -------------------------------------------------
+    # GLOBAL SCALE (if not user-specified)
+    # -------------------------------------------------
+
+    if "sigma_delta" in priors:
+        sigma_delta = priors["sigma_delta"]("sigma_delta")
+    else:
+        sigma_delta = pm.HalfNormal("sigma_delta", 10.0)
+
+    # -------------------------------------------------
+    # PRIOR HANDLING
+    # -------------------------------------------------
 
     if name in priors:
-        delta = priors[name](name, dims="additive_process")
+
+        prior_spec = priors[name]
+
+        # Case 1: Label-specific dict
+        if isinstance(prior_spec, dict):
+
+            delta_components = []
+
+            for label in proc_labels:
+
+                if label in prior_spec:
+                    rv = prior_spec[label](f"{name}_{label}")
+                else:
+                    rv = pm.Normal(
+                        f"{name}_{label}",
+                        mu=0.0,
+                        sigma=sigma_delta,
+                    )
+
+                delta_components.append(rv)
+
+            delta = pm.Deterministic(
+                name,
+                pt.stack(delta_components),
+                dims="additive_process",
+            )
+
+        # Case 2: Shared callable prior
+        else:
+            delta = prior_spec(
+                name,
+                dims="additive_process",
+            )
+
+    # Case 3: No prior specified
     else:
-        delta = pm.Normal(name, 0.0, 10.0, dims="additive_process")
-        
-    # delta_eff has dims "model"
+        delta = pm.Normal(
+            name,
+            mu=0.0,
+            sigma=sigma_delta,
+            dims="additive_process",
+        )
+
+    # -------------------------------------------------
+    # Additive structure
+    # -------------------------------------------------
 
     delta_eff = pm.Deterministic(
         f"{name}_eff",
@@ -368,8 +585,6 @@ def build_additive_process(
     )
 
     return delta, delta_eff
-
-
 def build_correlated_bias_model_with_processes(
     data: xr.DataArray,
     lookup_table,
