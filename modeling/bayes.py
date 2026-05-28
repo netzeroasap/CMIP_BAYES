@@ -25,28 +25,23 @@ def build_fixed_effects_model(evidence: xr.DataArray,
     priors={},
     var_name="X"):
     """
-    Build a hierarchical random-effects model for CMIP ensemble data in PyMC.
+    Build a fixed-effects model for CMIP ensemble data in PyMC.
 
-    This model implements a Bayesian correlated random-effects framework for estimating a latent
-    “true” quantity across multiple ESMs while 
-    accounting for both structural differences between ESMs and internal variability 
-    within an ESM. The model assumes:
-    
-    X_m = X_true + epsilon
-    
-    Where epsilon ~ N(0,sigma) is random measurement error
-    
-     Parameters
+    All ensemble members are assumed to measure the same underlying true value
+    with i.i.d. Gaussian noise. The model assumes:
+
+    X_m = X_true + epsilon,  epsilon ~ N(0, sigma)
+
+    Parameters
     ----------
-    data : xr.DataArray
-        CMIP ensemble data with dimensions that must include 'model'. Can have one or more
-        ensemble members per model.
+    evidence : xr.DataArray
+        CMIP ensemble data. Can have one or more ensemble members per model.
     priors : dict, optional
         Dictionary of callable prior constructors keyed by variable name. Supported keys:
         - 'X' or var_name: prior for the latent global mean.
-        - 'sigma': prior for measurement error
+        - 'sigma': prior for measurement error.
         If a key is absent, default weakly informative priors are used.
-    var_name : str, default "X"
+    var_name : str, default “X”
         Name of the latent quantity being estimated (used for naming PyMC variables).
     """
     
@@ -73,9 +68,11 @@ def use_noncentered(mu_iv, priors):
         return True
 
     # If sigma_iv is fixed to a small constant → centered is better
+    # Use a temporary model context so the probe call doesn't pollute the caller's model
     if "sigma_iv" in priors:
         try:
-            test = priors["sigma_iv"]("test")
+            with pm.Model():
+                test = priors["sigma_iv"]("test")
             if np.isscalar(test) and test < 0.2:
                 return False
         except Exception:
@@ -775,7 +772,7 @@ def simple_ec_model(constraint,priors={},var_name="ECS",observable_name="Y"):
         else:
             b = pm.Normal("b",0,5)
         if "sigma_reg" in priors.keys():
-            sigma_reg=prior["sigma_reg"]("sigma_reg")
+            sigma_reg=priors["sigma_reg"]("sigma_reg")
         else:
             sigma_reg = pm.HalfNormal("sigma_reg",1)
         # learn m,b
@@ -849,4 +846,137 @@ def add_emergent_constraint(
             mu=m * X_true + b,
             sigma=observable_obs_sigma,
             observed=observable_obs,
+        )
+
+def add_multivariate_emergent_constraint(
+    model,
+    latent_var_name,
+    observable_names,
+    X_model,
+    O_model,
+    O_obs,
+    O_obs_sigma,
+    eta=2.0,
+):
+    """
+    Add a multivariate emergent constraint with correlated observables.
+
+    Parameters
+    ----------
+    model : pm.Model
+        Existing PyMC model.
+
+    latent_var_name : str
+        Name of latent variable in the model (e.g. "ECS").
+
+    observable_names : list[str]
+        Names of observables (e.g. ["ZHA","BRI"]).
+
+    X_model : array (n_models,)
+        Latent variable values for CMIP.
+
+    O_model : array (n_models, n_observables)
+        Simulated observable values from CMIP.
+
+    O_obs : array (n_observables,)
+        Observed real-world values of the observables.
+
+    O_obs_sigma : array (n_observables,)
+        Observational uncertainties.
+
+    eta : float
+        LKJ prior concentration parameter.
+    """
+
+    n_obs = len(observable_names)
+
+    coords = {
+        "observable": observable_names,
+        "cross_observable": observable_names,
+    }
+
+    with model:
+
+        model.add_coords(coords)
+
+        X = model[latent_var_name]
+
+        # ----------------------------
+        # Emergent relationship priors
+        # ----------------------------
+        a = pm.Normal(
+            f"a_{latent_var_name}",
+            mu=0,
+            sigma=5,
+            dims="observable",
+        )
+
+        b = pm.Normal(
+            f"b_{latent_var_name}",
+            mu=0,
+            sigma=5,
+            dims="observable",
+        )
+
+        # ----------------------------
+        # Covariance structure
+        # ----------------------------
+        chol, corr, sigmas = pm.LKJCholeskyCov(
+            f"chol_cov_{latent_var_name}",
+            n=n_obs,
+            eta=eta,
+            sd_dist=pm.HalfNormal.dist(1.0),
+            compute_corr=True,
+        )
+
+        chol = pm.Deterministic(
+            f"chol_{latent_var_name}",
+            chol,
+            dims=("observable", "cross_observable"),
+        )
+
+        pm.Deterministic(
+            f"corr_{latent_var_name}",
+            corr,
+            dims=("observable", "cross_observable"),
+        )
+
+        pm.Deterministic(
+            f"sigmas_{latent_var_name}",
+            sigmas,
+            dims=("cross_observable",),
+        )
+
+        # ----------------------------
+        # Learn emergent relationship
+        # ----------------------------
+        mu_models = a + b * X_model[:, None]
+
+        pm.MvNormal(
+            f"{latent_var_name}_model_obs",
+            mu=mu_models,
+            chol=chol,
+            observed=O_model,
+        )
+
+        # ----------------------------
+        # Latent real-world observables
+        # ----------------------------
+        mu_obs = a + b * X
+
+        O_true = pm.MvNormal(
+            f"{latent_var_name}_O_true",
+            mu=mu_obs,
+            chol=chol,
+            dims="observable",
+        )
+
+        # ----------------------------
+        # Measurement model
+        # ----------------------------
+        pm.Normal(
+            f"{latent_var_name}_obs",
+            mu=O_true,
+            sigma=O_obs_sigma,
+            observed=O_obs,
         )
