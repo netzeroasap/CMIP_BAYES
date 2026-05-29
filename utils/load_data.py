@@ -100,7 +100,7 @@ def load_temperature(year):
 
 def emergent_constraints(generation):
     if generation == "CMIP6":
-        df=pd.read_excel("data/emergent_constraints/Schlund_esd-11-1233-2020-t06_CMIP6.xlsx")
+        df=pd.read_excel(DATA_DIR / "emergent_constraints/Schlund_esd-11-1233-2020-t06_CMIP6.xlsx")
         # replace Unicode minus with ASCII minus
         df = df.replace("−", "-", regex=True)
 

@@ -44,4 +44,4 @@ FIGS/
 # Backup or miscellaneous
 # -----------------------------
 *.bak
-*backup*
+*backup*data/feedbacks/*.pdf
